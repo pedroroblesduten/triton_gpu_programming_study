@@ -2,6 +2,8 @@ import torch
 import triton
 import triton.language as tl
 import time
+from utils import *
+import matplotlib.pyplot as plt
 
 #### ADD KERNEL FUCTION FROM OPENAI TUTORIALS ####
 
@@ -12,7 +14,7 @@ def add_kernel(x_pointer, # ponteiro para a entrada x
                y_pointer, # ponteiro para a entrada y
                out_pointer, # ponteiro para a saída (resultado da soma)
                n_elements, # numero total de elementos vetores
-               BLOCK_SIZE: tl.constexpr # quantos elementos cada bloco de execucao de processar
+               BLOCK_SIZE: tl.constexpr, # quantos elementos cada bloco de execucao de processar
                # "bloco" é uma unidade de threads que executam em paralelo.
                #tl.constexpr diz que BLOCK_SIZE deve ser constante em tempo de execução
                ):
@@ -42,6 +44,7 @@ def add(x: torch.Tensor, y: torch.Tensor):
 
     assert x.is_cuda and y.is_cuda and output.is_cuda, 'ERROR: both tensors need to be in cuda device'
     n_elements = output.numel() # calcula o numero total de elementos para a soma
+    BLOCK_SIZE, num_warps = calculate_settings(n_elements)
 
     # triton.cdiv é usado para calcular a dimensao da grade de lançamento
     # aqui estamos calculando quantos blocos de threads são necessários para processar todos os elementos
@@ -53,26 +56,15 @@ def add(x: torch.Tensor, y: torch.Tensor):
                     y_pointer=y,
                     out_pointer=output,
                     n_elements=n_elements,
-                    BLOCK_SIZE=1024)
+                    BLOCK_SIZE=BLOCK_SIZE,
+                    num_warps=num_warps)
     return output
-
-torch.manual_seed(0)
-size = 98432
-x = torch.rand(size, device='cuda')
-y = torch.rand(size, device='cuda')
-output_torch = x + y
-output_triton = add(x, y)
-print(output_torch)
-print(output_triton)
-print(f'The maximum difference between torch and triton is '
-      f'{torch.max(torch.abs(output_torch - output_triton))}')
-
 
 
 # Assuming the function 'add' is already defined as per your previous Triton setup.
 
 torch.manual_seed(0)
-size = 98432
+size = 8500
 x = torch.rand(size, device='cuda')
 y = torch.rand(size, device='cuda')
 
@@ -100,4 +92,54 @@ print(f'Total time for Triton addition: {total_time_triton:.6f} seconds')
 print(f'The maximum difference between torch and triton is '
       f'{torch.max(torch.abs(output_torch - output_triton))}')
 
+
+import torch
+import triton
+import matplotlib.pyplot as plt
+import time
+
+# Assuming the 'add' function is already defined as per your Triton setup
+
+def manual_benchmark(size):
+    x = torch.rand(size, device='cuda', dtype=torch.float32)
+    y = torch.rand(size, device='cuda', dtype=torch.float32)
+
+    # Benchmark Torch
+    start = time.time()
+    for _ in range(100):  # Number of runs can be adjusted
+        _ = x + y
+    torch.cuda.synchronize()
+    torch_time = (time.time() - start) / 100
+
+    # Benchmark Triton
+    start = time.time()
+    for _ in range(100):  # Number of runs can be adjusted
+        _ = add(x, y)
+    torch.cuda.synchronize()
+    triton_time = (time.time() - start) / 100
+
+    gbps = lambda ms: 12 * size / ms / 1e-6
+    return gbps(torch_time), gbps(triton_time)
+
+# Sizes to benchmark
+sizes = [2**i for i in range(12, 28, 1)]
+torch_results = []
+triton_results = []
+
+# Running the benchmark
+for size in sizes:
+    torch_gbps, triton_gbps = manual_benchmark(size)
+    torch_results.append(torch_gbps)
+    triton_results.append(triton_gbps)
+
+# Plotting the results
+plt.figure(figsize=(10, 6))
+plt.plot(sizes, torch_results, label='Torch', color='green', linestyle='-')
+plt.plot(sizes, triton_results, label='Triton', color='blue', linestyle='-')
+plt.xscale('log')
+plt.xlabel('Size')
+plt.ylabel('GB/s')
+plt.title('Vector Add Performance Comparison')
+plt.legend()
+plt.savefig('./results/vector_add.png')
 
